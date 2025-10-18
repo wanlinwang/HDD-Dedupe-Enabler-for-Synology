@@ -94,6 +94,7 @@ Options:
                           auto-updating. AGE must be a number: 0 or greater
   -s, --skip            Skip memory amount check (for testing)
       --list-backups    List all timestamped backup files
+      --dry-run         Preview changes without making any modifications
   -h, --help            Show this help message
   -v, --version         Show the script version
 
@@ -122,7 +123,7 @@ autoupdate=""
 
 # Check for flags with getopt
 if options="$(getopt -o abcdefghijklmnopqrstuvwxyz0123456789 -l \
-    skip,check,restore,help,version,tiny,hdd,email,autoupdate:,log,debug,list-backups -- "$@")"; then
+    skip,check,restore,help,version,tiny,hdd,email,autoupdate:,log,debug,list-backups,dry-run -- "$@")"; then
     eval set -- "$options"
     while true; do
         case "${1,,}" in
@@ -143,6 +144,9 @@ if options="$(getopt -o abcdefghijklmnopqrstuvwxyz0123456789 -l \
                 ;;
             -l|--log)           # Log
                 #log=yes
+                ;;
+            --dry-run)          # Preview changes without executing
+                dryrun=yes
                 ;;
             --list-backups)     # List all backup files
                 # Need to set strgmgr path first (only if on Synology)
@@ -220,8 +224,8 @@ else
 fi
 
 
-# Check script is running as root
-if [[ $( whoami ) != "root" ]]; then
+# Check script is running as root (skip check in dry-run mode)
+if [[ $( whoami ) != "root" ]] && [[ $dryrun != "yes" ]]; then
     ding
     echo -e "${Error}ERROR${Off} This script must be run as sudo or root!"
     exit 1
@@ -263,6 +267,12 @@ if [[ $storagemgrver ]]; then echo -e "StorageManager $storagemgrver \n"; fi
 if [[ ${#args[@]} -gt "0" ]]; then
     #echo -e "Using options: ${args[*]}\n"
     echo -e "Using options: ${args[*]}"
+fi
+
+# Show dry-run mode notification
+if [[ $dryrun == "yes" ]]; then
+    echo -e "\n${Cyan}=== DRY RUN MODE ===${Off}"
+    echo -e "${Cyan}No changes will be made. Previewing actions only.${Off}\n"
 fi
 
 if [[ $major$minor$micro -lt "701" ]]; then
@@ -843,23 +853,28 @@ fi
 
 # Always create a timestamped backup
 backup_file="${libhw}.bak.${backup_timestamp}"
-if cp -p "$libhw" "$backup_file" ; then
-    echo "Backup created: $(basename -- "$backup_file")"
+if [[ $dryrun == "yes" ]]; then
+    echo -e "${Cyan}[DRY RUN]${Off} Would create backup: $(basename -- "$backup_file")"
+    echo -e "${Cyan}[DRY RUN]${Off} Would link: $(basename -- "${libhw}.bak") -> $(basename -- "$backup_file")"
 else
-    ding
-    echo -e "${Error}ERROR${Off} Backup failed!"
-    exit 1
-fi
+    if cp -p "$libhw" "$backup_file" ; then
+        echo "Backup created: $(basename -- "$backup_file")"
+    else
+        ding
+        echo -e "${Error}ERROR${Off} Backup failed!"
+        exit 1
+    fi
 
-# Also create/update the .bak symlink for compatibility
-if [[ -f "${libhw}.bak" ]] || [[ -L "${libhw}.bak" ]]; then
-    # Remove existing .bak (file or symlink)
-    rm -f "${libhw}.bak"
-fi
+    # Also create/update the .bak symlink for compatibility
+    if [[ -f "${libhw}.bak" ]] || [[ -L "${libhw}.bak" ]]; then
+        # Remove existing .bak (file or symlink)
+        rm -f "${libhw}.bak"
+    fi
 
-# Create symlink to latest backup (relative path for same directory)
-cd "$(dirname "$libhw")" && ln -sf "$(basename -- "$backup_file")" "$(basename -- "${libhw}.bak")" && cd - >/dev/null
-echo "Latest backup linked as: $(basename -- "${libhw}.bak")"
+    # Create symlink to latest backup (relative path for same directory)
+    cd "$(dirname "$libhw")" && ln -sf "$(basename -- "$backup_file")" "$(basename -- "${libhw}.bak")" && cd - >/dev/null
+    echo "Latest backup linked as: $(basename -- "${libhw}.bak")"
+fi
 
 
 #----------------------------------------------------------
@@ -883,23 +898,31 @@ else
         exit 1
     fi
 
-    # Replace bytes in file
-    posrep=$(printf "%x\n" $((0x${poshex}+8)))
-    if ! printf %s "${posrep}: 9090" | xxd -r - "$libhw"; then
-        ding
-        echo -e "${Error}ERROR${Off} Failed to edit $(basename -- "$libhw")!"
-        exit 1
+    if [[ $dryrun == "yes" ]]; then
+        echo -e "\n${Cyan}[DRY RUN]${Off} Would edit $(basename -- "$libhw")"
+        echo -e "${Cyan}[DRY RUN]${Off} Would replace bytes at position 0x${poshex}+8: $bytes -> 9090"
+        echo -e "${Cyan}[DRY RUN]${Off} Would enable non-Synology drive support"
+        echo -e "${Cyan}[DRY RUN]${Off} System reboot would be required"
+        reboot="yes"
     else
-        # Check if libhwcontrol.so.1 was successfully edited
-        #echo -e "\nChecking if file was successfully edited."
-        hexstring="80 3E 00 B8 01 00 00 00 90 90 48 8B"
-        findbytes "$libhw"
-        if [[ $bytes == "9090" ]]; then
-            #echo -e "File successfully edited."
-            echo -e "\nEnabled non-Synology drive support."
-            #echo -e "\n${Cyan}You can now enable data deduplication"\
-            #    "pool in Storage Manager.${Off}"
-            reboot="yes"
+        # Replace bytes in file
+        posrep=$(printf "%x\n" $((0x${poshex}+8)))
+        if ! printf %s "${posrep}: 9090" | xxd -r - "$libhw"; then
+            ding
+            echo -e "${Error}ERROR${Off} Failed to edit $(basename -- "$libhw")!"
+            exit 1
+        else
+            # Check if libhwcontrol.so.1 was successfully edited
+            #echo -e "\nChecking if file was successfully edited."
+            hexstring="80 3E 00 B8 01 00 00 00 90 90 48 8B"
+            findbytes "$libhw"
+            if [[ $bytes == "9090" ]]; then
+                #echo -e "File successfully edited."
+                echo -e "\nEnabled non-Synology drive support."
+                #echo -e "\n${Cyan}You can now enable data deduplication"\
+                #    "pool in Storage Manager.${Off}"
+                reboot="yes"
+            fi
         fi
     fi
 fi
@@ -910,15 +933,20 @@ fi
 
 # Backup synoinfo.conf with timestamp
 backup_file="${synoinfo}.bak.${backup_timestamp}"
-if cp -p "$synoinfo" "$backup_file"; then
-    echo -e "\nBacked up $(basename -- "$synoinfo") as $(basename -- "$backup_file")" >&2
-    # Create/update .bak symlink for compatibility (remove old one first)
-    rm -f "${synoinfo}.bak"
-    cd "$(dirname "$synoinfo")" && ln -sf "$(basename -- "$backup_file")" "$(basename -- "${synoinfo}.bak")" && cd - >/dev/null
+if [[ $dryrun == "yes" ]]; then
+    echo -e "\n${Cyan}[DRY RUN]${Off} Would backup $(basename -- "$synoinfo") as $(basename -- "$backup_file")"
+    echo -e "${Cyan}[DRY RUN]${Off} Would link: $(basename -- "${synoinfo}.bak") -> $(basename -- "$backup_file")"
 else
-    ding
-    echo -e "\n${Error}ERROR 5${Off} Failed to backup $(basename -- "$synoinfo")!"
-    exit 1
+    if cp -p "$synoinfo" "$backup_file"; then
+        echo -e "\nBacked up $(basename -- "$synoinfo") as $(basename -- "$backup_file")" >&2
+        # Create/update .bak symlink for compatibility (remove old one first)
+        rm -f "${synoinfo}.bak"
+        cd "$(dirname "$synoinfo")" && ln -sf "$(basename -- "$backup_file")" "$(basename -- "${synoinfo}.bak")" && cd - >/dev/null
+    else
+        ding
+        echo -e "\n${Error}ERROR 5${Off} Failed to backup $(basename -- "$synoinfo")!"
+        exit 1
+    fi
 fi
 
 enabled=""
@@ -930,9 +958,15 @@ setting="$(/usr/syno/bin/synogetkeyvalue "$synoinfo" ${sbd})"
 if [[ $tiny != "yes" ]]; then
     if [[ ! $setting ]] || [[ $setting == "no" ]]; then
         if [[ -n $sbd ]]; then
-            /usr/syno/bin/synosetkeyvalue "$synoinfo" "$sbd" yes
-            /usr/syno/bin/synosetkeyvalue "$synoinfo2" "$sbd" yes
-            enabled="yes"
+            if [[ $dryrun == "yes" ]]; then
+                echo -e "\n${Cyan}[DRY RUN]${Off} Would set $sbd=yes in $synoinfo"
+                echo -e "${Cyan}[DRY RUN]${Off} Would set $sbd=yes in $synoinfo2"
+                enabled="yes"
+            else
+                /usr/syno/bin/synosetkeyvalue "$synoinfo" "$sbd" yes
+                /usr/syno/bin/synosetkeyvalue "$synoinfo2" "$sbd" yes
+                enabled="yes"
+            fi
         fi
     elif [[ $setting == "yes" ]]; then
         echo -e "\nBtrfs Data Deduplication already enabled."
@@ -941,10 +975,18 @@ if [[ $tiny != "yes" ]]; then
     # Disable support_tiny_btrfs_dedupe
     if [[ $enabled == "yes" ]]; then
         if grep "$stbd" "$synoinfo" >/dev/null; then
-            /usr/syno/bin/synosetkeyvalue "$synoinfo" "$stbd" no
+            if [[ $dryrun == "yes" ]]; then
+                echo -e "${Cyan}[DRY RUN]${Off} Would set $stbd=no in $synoinfo"
+            else
+                /usr/syno/bin/synosetkeyvalue "$synoinfo" "$stbd" no
+            fi
         fi
         if grep "$stbd" "$synoinfo2" >/dev/null; then
-            /usr/syno/bin/synosetkeyvalue "$synoinfo2" "$stbd" no
+            if [[ $dryrun == "yes" ]]; then
+                echo -e "${Cyan}[DRY RUN]${Off} Would set $stbd=no in $synoinfo2"
+            else
+                /usr/syno/bin/synosetkeyvalue "$synoinfo2" "$stbd" no
+            fi
         fi
     fi
 fi
@@ -954,9 +996,15 @@ setting="$(/usr/syno/bin/synogetkeyvalue "$synoinfo" ${stbd})"
 if [[ $tiny == "yes" ]]; then
     if [[ ! $setting ]] || [[ $setting == "no" ]]; then
         if [[ -n $stbd ]]; then
-            /usr/syno/bin/synosetkeyvalue "$synoinfo" "$stbd" yes
-            /usr/syno/bin/synosetkeyvalue "$synoinfo2" "$stbd" yes
-            enabled="yes"
+            if [[ $dryrun == "yes" ]]; then
+                echo -e "\n${Cyan}[DRY RUN]${Off} Would set $stbd=yes in $synoinfo"
+                echo -e "${Cyan}[DRY RUN]${Off} Would set $stbd=yes in $synoinfo2"
+                enabled="yes"
+            else
+                /usr/syno/bin/synosetkeyvalue "$synoinfo" "$stbd" yes
+                /usr/syno/bin/synosetkeyvalue "$synoinfo2" "$stbd" yes
+                enabled="yes"
+            fi
         fi
     elif [[ $setting == "yes" ]]; then
         echo -e "\nTiny Btrfs Data Deduplication already enabled."
@@ -965,10 +1013,18 @@ if [[ $tiny == "yes" ]]; then
     # Disable support_btrfs_dedupe
     if [[ $enabled == "yes" ]]; then
         if grep "$sbd" "$synoinfo" >/dev/null; then
-            /usr/syno/bin/synosetkeyvalue "$synoinfo" "$sbd" no
+            if [[ $dryrun == "yes" ]]; then
+                echo -e "${Cyan}[DRY RUN]${Off} Would set $sbd=no in $synoinfo"
+            else
+                /usr/syno/bin/synosetkeyvalue "$synoinfo" "$sbd" no
+            fi
         fi
         if grep "$sbd" "$synoinfo2" >/dev/null; then
-            /usr/syno/bin/synosetkeyvalue "$synoinfo2" "$sbd" no
+            if [[ $dryrun == "yes" ]]; then
+                echo -e "${Cyan}[DRY RUN]${Off} Would set $sbd=no in $synoinfo2"
+            else
+                /usr/syno/bin/synosetkeyvalue "$synoinfo2" "$sbd" no
+            fi
         fi
     fi
 fi
@@ -1009,24 +1065,32 @@ if [[ -f "$strgmgr" ]] && [[ $hdd == "yes" ]]; then
         storagemgrver="$(synopkg version StorageManager)"
         echo ""
         backup_file="${strgmgr}.bak.${backup_timestamp}"
-        if cp -p "$strgmgr" "$backup_file"; then
-            echo -e "Backed up $(basename -- "$strgmgr") as $(basename -- "$backup_file")"
-            # Create/update version-specific backup link (remove old one first)
-            rm -f "${strgmgr}.$storagemgrver"
-            cd "$(dirname "$strgmgr")" && ln -sf "$(basename -- "$backup_file")" "$(basename -- "${strgmgr}.$storagemgrver")" && cd - >/dev/null
-        else
-            ding
-            echo -e "${Error}ERROR${Off} Failed to backup $(basename -- "$strgmgr")!"
-        fi
-
-        sed -i 's/&&e.dedup_info.show_config_btn//g' "$strgmgr"
-        # Check if we edited file
-        if ! grep '&&e.dedup_info.show_config_btn' "$strgmgr" >/dev/null; then
-            echo -e "Enabled dedupe config menu for HDDs and 2.5\" SSDs."
+        if [[ $dryrun == "yes" ]]; then
+            echo -e "${Cyan}[DRY RUN]${Off} Would backup $(basename -- "$strgmgr") as $(basename -- "$backup_file")"
+            echo -e "${Cyan}[DRY RUN]${Off} Would link: $(basename -- "${strgmgr}.$storagemgrver") -> $(basename -- "$backup_file")"
+            echo -e "${Cyan}[DRY RUN]${Off} Would remove string: &&e.dedup_info.show_config_btn from $(basename -- "$strgmgr")"
+            echo -e "${Cyan}[DRY RUN]${Off} Would enable dedupe config menu for HDDs and 2.5\" SSDs"
             reload="yes"
         else
-            ding
-            echo -e "${Error}ERROR${Off} Failed to enable dedupe config menu for HDDs and 2.5\" SSDs!"
+            if cp -p "$strgmgr" "$backup_file"; then
+                echo -e "Backed up $(basename -- "$strgmgr") as $(basename -- "$backup_file")"
+                # Create/update version-specific backup link (remove old one first)
+                rm -f "${strgmgr}.$storagemgrver"
+                cd "$(dirname "$strgmgr")" && ln -sf "$(basename -- "$backup_file")" "$(basename -- "${strgmgr}.$storagemgrver")" && cd - >/dev/null
+            else
+                ding
+                echo -e "${Error}ERROR${Off} Failed to backup $(basename -- "$strgmgr")!"
+            fi
+
+            sed -i 's/&&e.dedup_info.show_config_btn//g' "$strgmgr"
+            # Check if we edited file
+            if ! grep '&&e.dedup_info.show_config_btn' "$strgmgr" >/dev/null; then
+                echo -e "Enabled dedupe config menu for HDDs and 2.5\" SSDs."
+                reload="yes"
+            else
+                ding
+                echo -e "${Error}ERROR${Off} Failed to enable dedupe config menu for HDDs and 2.5\" SSDs!"
+            fi
         fi
     else
         echo -e "\nDedupe config menu for HDDs and 2.5\" SSDs already enabled."
@@ -1043,14 +1107,27 @@ fi
 
 # Make sure xpe's storage_manager.js.gz includes our changes. Issue #88
 if [[ -f "${strgmgr}.gz" ]]; then
-    gzip -c "${strgmgr}" > "${strgmgr}.gz"
+    if [[ $dryrun == "yes" ]]; then
+        echo -e "${Cyan}[DRY RUN]${Off} Would update ${strgmgr}.gz"
+    else
+        gzip -c "${strgmgr}" > "${strgmgr}.gz"
+    fi
 fi
 
 
 #----------------------------------------------------------
 # Finished
 
-if [[ $reboot == "yes" ]]; then
+if [[ $dryrun == "yes" ]]; then
+    echo -e "\n${Cyan}=== DRY RUN COMPLETED ===${Off}"
+    echo -e "${Cyan}No actual changes were made.${Off}"
+    if [[ $reboot == "yes" ]]; then
+        echo -e "${Cyan}Note: System reboot would be required after real execution.${Off}"
+    elif [[ $reload == "yes" ]]; then
+        echo -e "${Cyan}Note: Browser reload would be required after real execution.${Off}"
+    fi
+    echo -e "\nTo execute these changes, run the script without --dry-run option."
+elif [[ $reboot == "yes" ]]; then
     rebootmsg
 elif [[ $reload == "yes" ]]; then
     reloadmsg
