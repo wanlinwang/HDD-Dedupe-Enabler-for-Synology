@@ -2,19 +2,20 @@
 #-------------------------------------------------------------------------------
 # Enables data deduplication with non-Synology drives and unsupported NAS models
 #
-# Github: https://github.com/007revad/Synology_enable_Deduplication
+# Github: https://github.com/wanlinwang/HDD-Dedupe-Enabler-for-Synology
+# Forked from: https://github.com/007revad/Synology_enable_Deduplication
 # Script verified at https://www.shellcheck.net/
 #
 # To run in a shell (replace /volume1/scripts/ with path to script):
-# sudo /volume1/scripts/syno_enable_dedupe.sh
+# sudo /volume1/scripts/synology_dedupe_enabler.sh
 #-------------------------------------------------------------------------------
 
 # Added support for DSM 7.0.1 to 7.2 (untested)
 
-scriptver="v1.4.31"
-script=Synology_enable_Deduplication
-repo="007revad/Synology_enable_Deduplication"
-scriptname=syno_enable_dedupe
+scriptver="v1.5.0"  # 更新版本号
+script=HDD_Dedupe_Enabler  # 新名称
+repo="wanlinwang/HDD-Dedupe-Enabler-for-Synology"  # 您的仓库
+scriptname=synology_dedupe_enabler  # 新文件名
 
 # Generate timestamp for backup files (YYYYMMDD_HHMMSS)
 backup_timestamp=$(date +"%Y%m%d_%H%M%S")
@@ -76,7 +77,7 @@ list_backups(){
 
 usage(){ 
     cat <<EOF
-$script $scriptver - by 007revad
+$script $scriptver
 
 Usage: $(basename "$0") [options]
 
@@ -107,7 +108,7 @@ EOF
 
 scriptversion(){ 
     cat <<EOF
-$script $scriptver - by 007revad
+$script $scriptver
 
 See https://github.com/$repo
 EOF
@@ -439,24 +440,24 @@ if ! printf "%s\n%s\n" "$tag" "$scriptver" |
                                 syslog_set warn "$script failed to copy $tag to script location"
                             fi
 
-                            # Copy new CHANGES.txt file to script location (if script on a volume)
+                            # Copy new CHANGELOG.md file to script location (if script on a volume)
                             if [[ $scriptpath =~ /volume* ]]; then
-                                # Set permissions on CHANGES.txt
-                                if ! chmod 664 "/tmp/$script-$shorttag/CHANGES.txt"; then
+                                # Set permissions on CHANGELOG.md
+                                if ! chmod 664 "/tmp/$script-$shorttag/CHANGELOG.md"; then
                                     permerr=1
                                     echo -e "${Error}ERROR${Off} Failed to set permissions on:"
-                                    echo "$scriptpath/CHANGES.txt"
+                                    echo "$scriptpath/CHANGELOG.md"
                                 fi
 
-                                # Copy new CHANGES.txt file to script location
-                                if ! cp -p "/tmp/$script-$shorttag/CHANGES.txt"\
-                                    "${scriptpath}/${scriptname}_CHANGES.txt";
+                                # Copy new CHANGELOG.md file to script location
+                                if ! cp -p "/tmp/$script-$shorttag/CHANGELOG.md"\
+                                    "${scriptpath}/${scriptname}_CHANGELOG.md";
                                 then
                                     if [[ $autoupdate != "yes" ]]; then copyerr=1; fi
                                     echo -e "${Error}ERROR${Off} Failed to copy"\
-                                        "$script-$shorttag/CHANGES.txt to:\n $scriptpath"
+                                        "$script-$shorttag/CHANGELOG.md to:\n $scriptpath"
                                 else
-                                    changestxt=" and changes.txt"
+                                    changestxt=" and CHANGELOG.md"
                                 fi
                             fi
 
