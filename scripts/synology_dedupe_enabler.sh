@@ -16,6 +16,9 @@ script=Synology_enable_Deduplication
 repo="007revad/Synology_enable_Deduplication"
 scriptname=syno_enable_dedupe
 
+# Generate timestamp for backup files (YYYYMMDD_HHMMSS)
+backup_timestamp=$(date +"%Y%m%d_%H%M%S")
+
 # Prevent Entware or user edited PATH causing issues
 # shellcheck disable=SC2155  # Declare and assign separately to avoid masking return values
 export PATH=$(echo "$PATH" | sed -e 's/\/opt\/bin:\/opt\/sbin://')
@@ -39,6 +42,38 @@ ding(){
     printf \\a
 }
 
+list_backups(){
+    # List all timestamped backup files
+    # Define colors locally in case function is called before main color initialization
+    local cyan_color='\e[0;36m'
+    local off_color='\e[0m'
+    
+    echo -e "\n${cyan_color}Existing backup files:${off_color}"
+    local found=0
+    
+    # List libhwcontrol backups
+    if ls /usr/lib/libhwcontrol.so.1.bak.* 2>/dev/null | head -5; then
+        found=1
+    fi
+    
+    # List synoinfo backups
+    if ls /etc.defaults/synoinfo.conf.bak.* 2>/dev/null | head -5; then
+        found=1
+    fi
+    
+    # List storage_panel backups
+    if [[ -f "$strgmgr" ]]; then
+        if ls "${strgmgr}".bak.* 2>/dev/null | head -5; then
+            found=1
+        fi
+    fi
+    
+    if [[ $found -eq 0 ]]; then
+        echo "  No backup files found."
+    fi
+    echo ""
+}
+
 usage(){ 
     cat <<EOF
 $script $scriptver - by 007revad
@@ -58,8 +93,11 @@ Options:
                           AGE is how many days old a release must be before
                           auto-updating. AGE must be a number: 0 or greater
   -s, --skip            Skip memory amount check (for testing)
+      --list-backups    List all timestamped backup files
   -h, --help            Show this help message
   -v, --version         Show the script version
+
+Note: All file modifications are backed up with timestamp (YYYYMMDD_HHMMSS)
 
 EOF
     exit 0
@@ -84,7 +122,7 @@ autoupdate=""
 
 # Check for flags with getopt
 if options="$(getopt -o abcdefghijklmnopqrstuvwxyz0123456789 -l \
-    skip,check,restore,help,version,tiny,hdd,email,autoupdate:,log,debug -- "$@")"; then
+    skip,check,restore,help,version,tiny,hdd,email,autoupdate:,log,debug,list-backups -- "$@")"; then
     eval set -- "$options"
     while true; do
         case "${1,,}" in
@@ -105,6 +143,19 @@ if options="$(getopt -o abcdefghijklmnopqrstuvwxyz0123456789 -l \
                 ;;
             -l|--log)           # Log
                 #log=yes
+                ;;
+            --list-backups)     # List all backup files
+                # Need to set strgmgr path first (only if on Synology)
+                if /usr/bin/uname -a 2>/dev/null | grep -i synology >/dev/null; then
+                    buildnumber=$(/usr/syno/bin/synogetkeyvalue /etc.defaults/VERSION buildnumber 2>/dev/null)
+                    if [[ $buildnumber -gt 64570 ]]; then
+                        strgmgr="/usr/local/packages/@appstore/StorageManager/ui/storage_panel.js"
+                    else
+                        strgmgr="/usr/syno/synoman/webman/modules/StorageManager/storage_panel.js"
+                    fi
+                fi
+                list_backups
+                exit 0
                 ;;
             -d|--debug)         # Show and log debug info
                 debug=yes
@@ -790,34 +841,25 @@ fi
 #----------------------------------------------------------
 # Backup libhwcontrol
 
-if [[ ! -f ${libhw}.bak ]]; then
-    if cp -p "$libhw" "$libhw".bak ; then
-        echo "Backup successful."
-    else
-        ding
-        echo -e "${Error}ERROR${Off} Backup failed!"
-        exit 1
-    fi
+# Always create a timestamped backup
+backup_file="${libhw}.bak.${backup_timestamp}"
+if cp -p "$libhw" "$backup_file" ; then
+    echo "Backup created: $(basename -- "$backup_file")"
 else
-    # Check if backup size matches file size
-    filesize=$(wc -c "$libhw" | awk '{print $1}')
-    filebaksize=$(wc -c "${libhw}.bak" | awk '{print $1}')
-    if [[ ! $filesize -eq "$filebaksize" ]]; then
-        echo -e "${Yellow}WARNING Backup file size is different to file!${Off}"
-        echo "Maybe you've updated DSM since last running this script?"
-        echo "Renaming file.bak to file.bak.old"
-        mv "${libhw}.bak" "$libhw".bak.old
-        if cp -p "$libhw" "$libhw".bak ; then
-            echo "Backup successful."
-        else
-            ding
-            echo -e "${Error}ERROR${Off} Backup failed!"
-            exit 1
-        fi
-    #else
-    #    echo "$(basename -- "$libhw") already backed up."
-    fi
+    ding
+    echo -e "${Error}ERROR${Off} Backup failed!"
+    exit 1
 fi
+
+# Also create/update the .bak symlink for compatibility
+if [[ -f "${libhw}.bak" ]] || [[ -L "${libhw}.bak" ]]; then
+    # Remove existing .bak (file or symlink)
+    rm -f "${libhw}.bak"
+fi
+
+# Create symlink to latest backup (relative path for same directory)
+cd "$(dirname "$libhw")" && ln -sf "$(basename -- "$backup_file")" "$(basename -- "${libhw}.bak")" && cd - >/dev/null
+echo "Latest backup linked as: $(basename -- "${libhw}.bak")"
 
 
 #----------------------------------------------------------
@@ -866,15 +908,17 @@ fi
 #------------------------------------------------------------------------------
 # Edit /etc.defaults/synoinfo.conf
 
-# Backup synoinfo.conf if needed
-if [[ ! -f ${synoinfo}.bak ]]; then
-    if cp -p "$synoinfo" "$synoinfo.bak"; then
-        echo -e "\nBacked up $(basename -- "$synoinfo")" >&2
-    else
-        ding
-        echo -e "\n${Error}ERROR 5${Off} Failed to backup $(basename -- "$synoinfo")!"
-        exit 1
-    fi
+# Backup synoinfo.conf with timestamp
+backup_file="${synoinfo}.bak.${backup_timestamp}"
+if cp -p "$synoinfo" "$backup_file"; then
+    echo -e "\nBacked up $(basename -- "$synoinfo") as $(basename -- "$backup_file")" >&2
+    # Create/update .bak symlink for compatibility (remove old one first)
+    rm -f "${synoinfo}.bak"
+    cd "$(dirname "$synoinfo")" && ln -sf "$(basename -- "$backup_file")" "$(basename -- "${synoinfo}.bak")" && cd - >/dev/null
+else
+    ding
+    echo -e "\n${Error}ERROR 5${Off} Failed to backup $(basename -- "$synoinfo")!"
+    exit 1
 fi
 
 enabled=""
@@ -961,16 +1005,18 @@ fi
 if [[ -f "$strgmgr" ]] && [[ $hdd == "yes" ]]; then
     # StorageManager package is installed
     if grep '&&e.dedup_info.show_config_btn' "$strgmgr" >/dev/null; then
-        # Backup storage_panel.js"
+        # Backup storage_panel.js with timestamp
         storagemgrver="$(synopkg version StorageManager)"
         echo ""
-        if [[ ! -f "${strgmgr}.$storagemgrver" ]]; then
-            if cp -p "$strgmgr" "${strgmgr}.$storagemgrver"; then
-                echo -e "Backed up $(basename -- "$strgmgr")"
-            else
-                ding
-                echo -e "${Error}ERROR${Off} Failed to backup $(basename -- "$strgmgr")!"
-            fi
+        backup_file="${strgmgr}.bak.${backup_timestamp}"
+        if cp -p "$strgmgr" "$backup_file"; then
+            echo -e "Backed up $(basename -- "$strgmgr") as $(basename -- "$backup_file")"
+            # Create/update version-specific backup link (remove old one first)
+            rm -f "${strgmgr}.$storagemgrver"
+            cd "$(dirname "$strgmgr")" && ln -sf "$(basename -- "$backup_file")" "$(basename -- "${strgmgr}.$storagemgrver")" && cd - >/dev/null
+        else
+            ding
+            echo -e "${Error}ERROR${Off} Failed to backup $(basename -- "$strgmgr")!"
         fi
 
         sed -i 's/&&e.dedup_info.show_config_btn//g' "$strgmgr"
