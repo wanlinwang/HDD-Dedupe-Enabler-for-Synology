@@ -12,7 +12,7 @@
 
 # Added support for DSM 7.0.1 to 7.2 (untested)
 
-scriptver="v1.5.0"  # 更新版本号
+scriptver="v1.5.1"  # 更新版本号
 script=HDD_Dedupe_Enabler  # 新名称
 repo="wanlinwang/HDD-Dedupe-Enabler-for-Synology"  # 您的仓库
 scriptname=synology_dedupe_enabler  # 新文件名
@@ -20,9 +20,16 @@ scriptname=synology_dedupe_enabler  # 新文件名
 # Generate timestamp for backup files (YYYYMMDD_HHMMSS)
 backup_timestamp=$(date +"%Y%m%d_%H%M%S")
 
-# Prevent Entware or user edited PATH causing issues
+# Prevent Entware or user edited PATH causing issues (robust removal)
 # shellcheck disable=SC2155  # Declare and assign separately to avoid masking return values
-export PATH=$(echo "$PATH" | sed -e 's/\/opt\/bin:\/opt\/sbin://')
+export PATH="$(printf '%s' "$PATH" \
+  | sed -e 's#:/opt/bin##g' -e 's#:/opt/sbin##g' \
+        -e 's#^/opt/bin:##' -e 's#^/opt/sbin:##')"
+
+# Force C locale for consistent tool output
+export LC_ALL=C
+
+SYNOBIN="/usr/syno/bin"
 
 # Check BASH variable is bash
 if [ ! "$(basename "$BASH")" = bash ]; then
@@ -39,39 +46,20 @@ if ! /usr/bin/uname -a | grep -i synology >/dev/null; then
     exit 1
 fi
 
-ding(){ 
-    printf \\a
-}
+ding(){ printf \\a; }
 
 list_backups(){
     # List all timestamped backup files
-    # Define colors locally in case function is called before main color initialization
     local cyan_color='\e[0;36m'
     local off_color='\e[0m'
-    
     echo -e "\n${cyan_color}Existing backup files:${off_color}"
     local found=0
-    
-    # List libhwcontrol backups
-    if ls /usr/lib/libhwcontrol.so.1.bak.* 2>/dev/null | head -5; then
-        found=1
-    fi
-    
-    # List synoinfo backups
-    if ls /etc.defaults/synoinfo.conf.bak.* 2>/dev/null | head -5; then
-        found=1
-    fi
-    
-    # List storage_panel backups
+    if ls /usr/lib/libhwcontrol.so.1.bak.* 2>/dev/null | head -5; then found=1; fi
+    if ls /etc.defaults/synoinfo.conf.bak.* 2>/dev/null | head -5; then found=1; fi
     if [[ -f "$strgmgr" ]]; then
-        if ls "${strgmgr}".bak.* 2>/dev/null | head -5; then
-            found=1
-        fi
+        if ls "${strgmgr}".bak.* 2>/dev/null | head -5; then found=1; fi
     fi
-    
-    if [[ $found -eq 0 ]]; then
-        echo "  No backup files found."
-    fi
+    if [[ $found -eq 0 ]]; then echo "  No backup files found."; fi
     echo ""
 }
 
@@ -105,7 +93,6 @@ EOF
     exit 0
 }
 
-
 scriptversion(){ 
     cat <<EOF
 $script $scriptver
@@ -115,11 +102,8 @@ EOF
     exit 0
 }
 
-
 # Save options used
 args=("$@")
-
-
 autoupdate=""
 
 # Check for flags with getopt
@@ -128,31 +112,16 @@ if options="$(getopt -o abcdefghijklmnopqrstuvwxyz0123456789 -l \
     eval set -- "$options"
     while true; do
         case "${1,,}" in
-            -h|--help)          # Show usage options
-                usage
-                ;;
-            -v|--version)       # Show script version
-                scriptversion
-                ;;
-            -t|--tiny)          # Enable tiny deduplication
-                tiny=yes
-                ;;
-            --hdd)              # Enable deduplication for HDDs (dangerous)
-                hdd=yes
-                ;;
-            -s|--skip)          # Skip memory amount check (for testing)
-                skip=yes
-                ;;
-            -l|--log)           # Log
-                #log=yes
-                ;;
-            --dry-run)          # Preview changes without executing
-                dryrun=yes
-                ;;
-            --list-backups)     # List all backup files
-                # Need to set strgmgr path first (only if on Synology)
+            -h|--help) usage ;;
+            -v|--version) scriptversion ;;
+            -t|--tiny) tiny=yes ;;
+            --hdd) hdd=yes ;;
+            -s|--skip) skip=yes ;;
+            -l|--log) : ;;  # reserved
+            --dry-run) dryrun=yes ;;
+            --list-backups)
                 if /usr/bin/uname -a 2>/dev/null | grep -i synology >/dev/null; then
-                    buildnumber=$(/usr/syno/bin/synogetkeyvalue /etc.defaults/VERSION buildnumber 2>/dev/null)
+                    buildnumber=$("$SYNOBIN/synogetkeyvalue" /etc.defaults/VERSION buildnumber 2>/dev/null)
                     if [[ $buildnumber -gt 64570 ]]; then
                         strgmgr="/usr/local/packages/@appstore/StorageManager/ui/storage_panel.js"
                     else
@@ -162,37 +131,16 @@ if options="$(getopt -o abcdefghijklmnopqrstuvwxyz0123456789 -l \
                 list_backups
                 exit 0
                 ;;
-            -d|--debug)         # Show and log debug info
-                debug=yes
-                ;;
-            -c|--check)         # Check value in file and backup file
-                check=yes
-                break
-                ;;
-            -r|--restore)       # Restore from backups to undo changes
-                restore=yes
-                break
-                ;;
-            -e|--email)         # Disable colour text in task scheduler emails
-                color=no
-                ;;
-            --autoupdate)       # Auto update script
+            -d|--debug) debug=yes ;;
+            -c|--check) check=yes; break ;;
+            -r|--restore) restore=yes; break ;;
+            -e|--email) color=no ;;
+            --autoupdate)
                 autoupdate=yes
-                if [[ $2 =~ ^[0-9]+$ ]]; then
-                    delay="$2"
-                    shift
-                else
-                    delay="0"
-                fi
+                if [[ $2 =~ ^[0-9]+$ ]]; then delay="$2"; shift; else delay="0"; fi
                 ;;
-            --)
-                shift
-                break
-                ;;
-            *)                  # Show usage options
-                echo -e "Invalid option '$1'\n"
-                usage "$1"
-                ;;
+            --) shift; break ;;
+            *) echo -e "Invalid option '$1'\n"; usage "$1" ;;
         esac
         shift
     done
@@ -201,72 +149,53 @@ else
     usage
 fi
 
-
 if [[ $debug == "yes" ]]; then
     set -x
     export PS4='`[[ $? == 0 ]] || echo "\e[1;31;40m($?)\e[m\n "`:.$LINENO:'
 fi
 
-
 # Shell Colors
 if [[ $color != "no" ]]; then
-    #Black='\e[0;30m'   # ${Black}
-    Red='\e[0;31m'      # ${Red}
-    #Green='\e[0;32m'   # ${Green}
-    Yellow='\e[0;33m'   # ${Yellow}
-    #Blue='\e[0;34m'    # ${Blue}
-    #Purple='\e[0;35m'  # ${Purple}
-    Cyan='\e[0;36m'     # ${Cyan}
-    #White='\e[0;37m'   # ${White}
-    Error='\e[41m'      # ${Error}
-    Off='\e[0m'         # ${Off}
+    Red='\e[0;31m'; Yellow='\e[0;33m'; Cyan='\e[0;36m'; Error='\e[41m'; Off='\e[0m'
 else
     echo ""  # For task scheduler email readability
+    Red=''; Yellow=''; Cyan=''; Error=''; Off=''
 fi
 
-
 # Check script is running as root (skip check in dry-run mode)
-if [[ $( whoami ) != "root" ]] && [[ $dryrun != "yes" ]]; then
+if [[ ${EUID:-$(id -u)} -ne 0 ]] && [[ $dryrun != "yes" ]]; then
     ding
     echo -e "${Error}ERROR${Off} This script must be run as sudo or root!"
     exit 1
 fi
 
-# Get DSM major, minor and micro versions
-major=$(/usr/syno/bin/synogetkeyvalue /etc.defaults/VERSION majorversion)
-minor=$(/usr/syno/bin/synogetkeyvalue /etc.defaults/VERSION minorversion)
-micro=$(/usr/syno/bin/synogetkeyvalue /etc.defaults/VERSION micro)
+# Get DSM versions
+major=$("$SYNOBIN/synogetkeyvalue" /etc.defaults/VERSION majorversion)
+minor=$("$SYNOBIN/synogetkeyvalue" /etc.defaults/VERSION minorversion)
+micro=$("$SYNOBIN/synogetkeyvalue" /etc.defaults/VERSION micro)
 
 # Get NAS model
 model=$(cat /proc/sys/kernel/syno_hw_version)
-#modelname="$model"
-
 
 # Show script version
-#echo -e "$script $scriptver\ngithub.com/$repo\n"
 echo "$script $scriptver"
 
 # Get DSM full version
-productversion=$(/usr/syno/bin/synogetkeyvalue /etc.defaults/VERSION productversion)
-buildphase=$(/usr/syno/bin/synogetkeyvalue /etc.defaults/VERSION buildphase)
-buildnumber=$(/usr/syno/bin/synogetkeyvalue /etc.defaults/VERSION buildnumber)
-smallfixnumber=$(/usr/syno/bin/synogetkeyvalue /etc.defaults/VERSION smallfixnumber)
-
-# Show DSM full version and model
+productversion=$("$SYNOBIN/synogetkeyvalue" /etc.defaults/VERSION productversion)
+buildphase=$("$SYNOBIN/synogetkeyvalue" /etc.defaults/VERSION buildphase)
+buildnumber=$("$SYNOBIN/synogetkeyvalue" /etc.defaults/VERSION buildnumber)
+smallfixnumber=$("$SYNOBIN/synogetkeyvalue" /etc.defaults/VERSION smallfixnumber)
+smallfixnumber=${smallfixnumber:-0}
 if [[ $buildphase == GM ]]; then buildphase=""; fi
-if [[ $smallfixnumber -gt "0" ]]; then smallfix="-$smallfixnumber"; fi
+if [[ $smallfixnumber -gt 0 ]]; then smallfix="-$smallfixnumber"; fi
 echo -e "$model DSM $productversion-$buildnumber$smallfix $buildphase\n"
 
-
 # Get StorageManager version
-storagemgrver=$(/usr/syno/bin/synopkg version StorageManager)
-# Show StorageManager version
+storagemgrver=$("$SYNOBIN/synopkg" version StorageManager 2>/dev/null)
 if [[ $storagemgrver ]]; then echo -e "StorageManager $storagemgrver \n"; fi
 
-
 # Show options used
-if [[ ${#args[@]} -gt "0" ]]; then
-    #echo -e "Using options: ${args[*]}\n"
+if [[ ${#args[@]} -gt 0 ]]; then
     echo -e "Using options: ${args[*]}"
 fi
 
@@ -278,27 +207,24 @@ fi
 
 if [[ $major$minor$micro -lt "701" ]]; then
     ding
-    #echo "This script only works for DSM 7.0.1 and later."
     echo "Btrfs Data Deduplication only works in DSM 7.0.1 and later."
     exit 1
 fi
 
 # Check model (and DSM version for that model) supports dedupe
- if [[ ! -f /usr/syno/sbin/synobtrfsdedupe ]]; then
-    arch=$(/usr/syno/bin/synogetkeyvalue /etc.defaults/synoinfo.conf platform_name)
-    #echo "Your model or DSM version does not support Btrfs Data Deduplication."
+if [[ ! -f /usr/syno/sbin/synobtrfsdedupe ]]; then
+    arch=$("$SYNOBIN/synogetkeyvalue" /etc.defaults/synoinfo.conf platform_name)
     echo "Models with $arch CPUs do not support Btrfs Data Deduplication."
-    echo "Only models with V1000, R1000, Geminilake, Broadwellnkv2, "
+    echo "Only models with V1000, R1000, Geminilake, Broadwellnkv2,"
     echo "Broadwellnk, Broadwell, Purley and Epyc7002 CPUs are supported."
     exit
 fi
 
-
 #------------------------------------------------------------------------------
-# Check latest release with GitHub API
+# Check latest release with GitHub API (robust fallbacks)
 
 syslog_set(){ 
-    if [[ ${1,,} == "info" ]] || [[ ${1,,} == "warn" ]] || [[ ${1,,} == "err" ]]; then
+    if [[ ${1,,} == "info" || ${1,,} == "warn" || ${1,,} == "err" ]]; then
         if [[ $autoupdate == "yes" ]]; then
             # Add entry to Synology system log
             /usr/syno/bin/synologset1 sys "$1" 0x11100000 "$2"
@@ -306,180 +232,142 @@ syslog_set(){
     fi
 }
 
+release=""
+if command -v curl >/dev/null; then
+    release=$(curl --silent -m 10 --connect-timeout 5 \
+        "https://api.github.com/repos/$repo/releases/latest" || echo "")
+fi
 
-# Get latest release info
-# Curl timeout options:
-# https://unix.stackexchange.com/questions/94604/does-curl-have-a-timeout
-release=$(curl --silent -m 10 --connect-timeout 5 \
-    "https://api.github.com/repos/$repo/releases/latest")
+tag=""; shorttag=""
+if [[ -n $release ]]; then
+    tag=$(echo "$release" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+    shorttag="${tag#v}"
+fi
 
-# Release version
-tag=$(echo "$release" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-shorttag="${tag:1}"
+# Compute "newer" flag using robust comparison
+newer=no
+if [[ -n $tag && -n $scriptver ]]; then
+    if command -v sort >/dev/null && sort -V </dev/null &>/dev/null; then
+        # If sorted order check fails => tag is newer than scriptver
+        if ! printf "%s\n%s\n" "$tag" "$scriptver" | sort -V --check=quiet 2>/dev/null; then
+            newer=yes
+        fi
+    else
+        # Fallback: naive string compare without 'v'
+        _t="${tag#v}"; _s="${scriptver#v}"
+        [[ "$_t" != "$_s" && "$_t" > "$_s" ]] && newer=yes
+    fi
+fi
 
-# Release published date
-published=$(echo "$release" | grep '"published_at":' | sed -E 's/.*"([^"]+)".*/\1/')
-published="${published:0:10}"
-published=$(date -d "$published" '+%s')
-
-# Today's date
-now=$(date '+%s')
-
-# Days since release published
-age=$(((now - published)/(60*60*24)))
-
+# Days since release (optional; skip if date -d not available)
+age=""
+if [[ -n $release ]]; then
+    published=$(echo "$release" | grep '"published_at":' | sed -E 's/.*"([^"]+)".*/\1/')
+    if command -v date >/dev/null && date -d 1970-01-01 +%s &>/dev/null; then
+        published_epoch=$(date -d "${published:0:10}" +%s 2>/dev/null || echo "")
+        now_epoch=$(date +%s)
+        if [[ -n $published_epoch ]]; then
+            age=$(((now_epoch - published_epoch)/(60*60*24)))
+        fi
+    fi
+fi
 
 # Get script location
-# https://stackoverflow.com/questions/59895/
 source=${BASH_SOURCE[0]}
-while [ -L "$source" ]; do # Resolve $source until the file is no longer a symlink
+while [ -L "$source" ]; do
     scriptpath=$( cd -P "$( dirname "$source" )" >/dev/null 2>&1 && pwd )
     source=$(readlink "$source")
-    # If $source was a relative symlink, we need to resolve it
-    # relative to the path where the symlink file was located
     [[ $source != /* ]] && source=$scriptpath/$source
 done
 scriptpath=$( cd -P "$( dirname "$source" )" >/dev/null 2>&1 && pwd )
 scriptfile=$( basename -- "$source" )
 echo "Running from: ${scriptpath}/$scriptfile"
 
-# Warn if script located on M.2 drive
+# Warn if script located on M.2 drive (best-effort; skip if lvm tools missing)
 scriptvol=$(echo "$scriptpath" | cut -d"/" -f2)
-vg=$(lvdisplay | grep /volume_"${scriptvol#volume}" | cut -d"/" -f3)
-md=$(pvdisplay | grep -B 1 -E '[ ]'"$vg" | grep /dev/ | cut -d"/" -f3)
-if cat /proc/mdstat | grep "$md" | grep nvme >/dev/null; then
-    echo -e "${Yellow}WARNING${Off} Don't store this script on an NVMe volume!"
+if command -v lvdisplay >/dev/null && command -v pvdisplay >/dev/null; then
+    vg=$(lvdisplay 2>/dev/null | grep /volume_"${scriptvol#volume}" | cut -d"/" -f3 | head -n1)
+    md=$(pvdisplay 2>/dev/null | grep -B 1 -E '[ ]'"$vg" | grep /dev/ | cut -d"/" -f3 | head -n1)
+    if [[ -n $md ]] && cat /proc/mdstat 2>/dev/null | grep "$md" | grep -qi nvme; then
+        echo -e "${Yellow}WARNING${Off} Don't store this script on an NVMe volume!"
+    fi
 fi
-
 
 cleanup_tmp(){ 
     cleanup_err=
-
-    # Delete downloaded .tar.gz file
     if [[ -f "/tmp/$script-$shorttag.tar.gz" ]]; then
-        if ! rm "/tmp/$script-$shorttag.tar.gz"; then
-            echo -e "${Error}ERROR${Off} Failed to delete"\
-                "downloaded /tmp/$script-$shorttag.tar.gz!" >&2
-            cleanup_err=1
-        fi
+        rm -f "/tmp/$script-$shorttag.tar.gz" || cleanup_err=1
     fi
-
-    # Delete extracted tmp files
     if [[ -d "/tmp/$script-$shorttag" ]]; then
-        if ! rm -r "/tmp/$script-$shorttag"; then
-            echo -e "${Error}ERROR${Off} Failed to delete"\
-                "downloaded /tmp/$script-$shorttag!" >&2
-            cleanup_err=1
-        fi
+        rm -rf "/tmp/$script-$shorttag" || cleanup_err=1
     fi
-
-    # Add warning to DSM log
     if [[ $cleanup_err ]]; then
         syslog_set warn "$script update failed to delete tmp files"
     fi
 }
 
-
-if ! printf "%s\n%s\n" "$tag" "$scriptver" |
-        sort --check=quiet --version-sort >/dev/null ; then
+if [[ $newer == yes ]]; then
     echo -e "\n${Cyan}There is a newer version of this script available.${Off}"
     echo -e "Current version: ${scriptver}\nLatest version:  $tag"
     scriptdl="$scriptpath/$script-$shorttag"
     if [[ -f ${scriptdl}.tar.gz ]] || [[ -f ${scriptdl}.zip ]]; then
-        # They have the latest version tar.gz downloaded but are using older version
         echo "You have the latest version downloaded but are using an older version"
-        sleep 10
+        sleep 3
     elif [[ -d $scriptdl ]]; then
-        # They have the latest version extracted but are using older version
         echo "You have the latest version extracted but are using an older version"
-        sleep 10
+        sleep 3
     else
         if [[ $autoupdate == "yes" ]]; then
-            if [[ $age -gt "$delay" ]] || [[ $age -eq "$delay" ]]; then
+            # Only auto-update if we could compute 'age'
+            if [[ -n $age && $age -ge ${delay:-0} ]]; then
                 echo "Downloading $tag"
                 reply=y
             else
-                echo "Skipping as $tag is less than $delay days old."
+                echo "Skipping auto-update (age unknown or < delay)."
             fi
         else
             echo -e "${Cyan}Do you want to download $tag now?${Off} [y/n]"
-            read -r -t 30 reply
+            read -r -t 30 reply || reply=n
         fi
 
         if [[ ${reply,,} == "y" ]]; then
-            # Delete previously downloaded .tar.gz file and extracted tmp files
             cleanup_tmp
-
             if cd /tmp; then
                 url="https://github.com/$repo/archive/refs/tags/$tag.tar.gz"
                 if ! curl -JLO -m 30 --connect-timeout 5 "$url"; then
-                    echo -e "${Error}ERROR${Off} Failed to download"\
-                        "$script-$shorttag.tar.gz!"
+                    echo -e "${Error}ERROR${Off} Failed to download $script-$shorttag.tar.gz!"
                     syslog_set warn "$script $tag failed to download"
                 else
                     if [[ -f /tmp/$script-$shorttag.tar.gz ]]; then
-                        # Extract tar file to /tmp/<script-name>
                         if ! tar -xf "/tmp/$script-$shorttag.tar.gz" -C "/tmp"; then
-                            echo -e "${Error}ERROR${Off} Failed to"\
-                                "extract $script-$shorttag.tar.gz!"
+                            echo -e "${Error}ERROR${Off} Failed to extract $script-$shorttag.tar.gz!"
                             syslog_set warn "$script failed to extract $script-$shorttag.tar.gz!"
                         else
-                            # Set script sh files as executable
-                            if ! chmod a+x "/tmp/$script-$shorttag/"*.sh ; then
-                                permerr=1
-                                echo -e "${Error}ERROR${Off} Failed to set executable permissions"
-                                syslog_set warn "$script failed to set permissions on $tag"
-                            fi
-
-                            # Copy new script sh file to script location
-                            if ! cp -p "/tmp/$script-$shorttag/${scriptname}.sh" "${scriptpath}/${scriptfile}";
-                            then
+                            chmod a+x "/tmp/$script-$shorttag/"*.sh 2>/dev/null || permerr=1
+                            if ! cp -p "/tmp/$script-$shorttag/${scriptname}.sh" "${scriptpath}/${scriptfile}"; then
                                 copyerr=1
-                                echo -e "${Error}ERROR${Off} Failed to copy"\
-                                    "$script-$shorttag sh file(s) to:\n $scriptpath/${scriptfile}"
+                                echo -e "${Error}ERROR${Off} Failed to copy script to:\n $scriptpath/${scriptfile}"
                                 syslog_set warn "$script failed to copy $tag to script location"
                             fi
-
-                            # Copy new CHANGELOG.md file to script location (if script on a volume)
                             if [[ $scriptpath =~ /volume* ]]; then
-                                # Set permissions on CHANGELOG.md
-                                if ! chmod 664 "/tmp/$script-$shorttag/CHANGELOG.md"; then
-                                    permerr=1
-                                    echo -e "${Error}ERROR${Off} Failed to set permissions on:"
-                                    echo "$scriptpath/CHANGELOG.md"
-                                fi
-
-                                # Copy new CHANGELOG.md file to script location
-                                if ! cp -p "/tmp/$script-$shorttag/CHANGELOG.md"\
-                                    "${scriptpath}/${scriptname}_CHANGELOG.md";
-                                then
-                                    if [[ $autoupdate != "yes" ]]; then copyerr=1; fi
-                                    echo -e "${Error}ERROR${Off} Failed to copy"\
-                                        "$script-$shorttag/CHANGELOG.md to:\n $scriptpath"
-                                else
-                                    changestxt=" and CHANGELOG.md"
-                                fi
+                                chmod 664 "/tmp/$script-$shorttag/CHANGELOG.md" 2>/dev/null || permerr=1
+                                cp -p "/tmp/$script-$shorttag/CHANGELOG.md" \
+                                  "${scriptpath}/${scriptname}_CHANGELOG.md" 2>/dev/null || {
+                                    [[ $autoupdate != "yes" ]] && copyerr=1
+                                  }
                             fi
-
-                            # Delete downloaded tmp files
                             cleanup_tmp
-
-                            # Notify of success (if there were no errors)
-                            if [[ $copyerr != 1 ]] && [[ $permerr != 1 ]]; then
-                                echo -e "\n$tag ${scriptfile}$changestxt downloaded to: ${scriptpath}\n"
+                            if [[ $copyerr != 1 && $permerr != 1 ]]; then
+                                echo -e "\n$tag ${scriptfile} downloaded to: ${scriptpath}\n"
                                 syslog_set info "$script successfully updated to $tag"
-
-                                # Reload script
-                                printf -- '-%.0s' {1..79}; echo  # print 79 -
+                                printf -- '-%.0s' {1..79}; echo
                                 exec "${scriptpath}/$scriptfile" "${args[@]}"
                             else
                                 syslog_set warn "$script update to $tag had errors"
                             fi
                         fi
                     else
-                        echo -e "${Error}ERROR${Off}"\
-                            "/tmp/$script-$shorttag.tar.gz not found!"
-                        #ls /tmp | grep "$script"  # debug
+                        echo -e "${Error}ERROR${Off} /tmp/$script-$shorttag.tar.gz not found!"
                         syslog_set warn "/tmp/$script-$shorttag.tar.gz not found"
                     fi
                 fi
@@ -492,18 +380,15 @@ if ! printf "%s\n%s\n" "$tag" "$scriptver" |
     fi
 fi
 
-
 #------------------------------------------------------------------------------
 # Set file variables
 
 synoinfo="/etc.defaults/synoinfo.conf"
 synoinfo2="/etc/synoinfo.conf"
-#strgmgr="/var/packages/StorageManager/target/ui/storage_panel.js"
 libhw="/usr/lib/libhwcontrol.so.1"
 
 if [[ $buildnumber -gt 64570 ]]; then
     # DSM 7.2.1 and later
-    #strgmgr="/var/packages/StorageManager/target/ui/storage_panel.js"
     strgmgr="/usr/local/packages/@appstore/StorageManager/ui/storage_panel.js"
 else
     # DSM 7.0.1 to 7.2
@@ -512,21 +397,17 @@ fi
 
 if [[ ! -f ${libhw} ]]; then
     ding
-    echo -e "${Error}ERROR${Off} $(basename -- $libhw) not found!"
+    echo -e "${Error}ERROR${Off} $(basename -- "$libhw") not found!"
     exit 1
 fi
 
-
 rebootmsg(){ 
-    # Reboot prompt
     echo -e "\n${Cyan}The Synology needs to restart.${Off}"
     echo -e "Type ${Cyan}yes${Off} to reboot now."
     echo -e "Type anything else to quit (if you will restart it yourself)."
-    read -r -t 10 answer
+    read -r -t 10 answer || answer=""
     if [[ ${answer,,} != "yes" ]]; then exit; fi
-
-#    # Reboot in the background so user can see DSM's "going down" message
-#    reboot &
+    sync || true
     if [[ -x /usr/syno/sbin/synopoweroff ]]; then
         /usr/syno/sbin/synopoweroff -r || reboot
     else
@@ -535,7 +416,6 @@ rebootmsg(){
 }
 
 reloadmsg(){ 
-    # Reload browser prompt
     echo -e "\nFinished"
     echo -e "\nIf you have DSM open in a browser you need to"
     echo "refresh the browser window or tab."
@@ -543,16 +423,13 @@ reloadmsg(){
     exit
 }
 
-
 #----------------------------------------------------------
 # Restore changes from backup file
 
 compare_md5(){ 
-    # $1 is file 1
-    # $2 is file 2
-    if [[ -f "$1" ]] && [[ -f "$2" ]]; then
-        if [[ $(md5sum -b "$1" | awk '{print $1}') == $(md5sum -b "$2" | awk '{print $1}') ]];
-        then
+    # $1 is file 1 ; $2 is file 2
+    if [[ -f "$1" && -f "$2" ]]; then
+        if [[ $(md5sum -b "$1" | awk '{print $1}') == $(md5sum -b "$2" | awk '{print $1}') ]]; then
             return 0
         else
             return 1
@@ -565,38 +442,34 @@ compare_md5(){
 
 if [[ $restore == "yes" ]]; then
     echo ""
-    if [[ -f ${synoinfo}.bak ]] || [[ -f ${libhw}.bak ]] ||\
-        [[ -f ${strgmgr}.${storagemgrver} ]]; then
+    if [[ -f ${synoinfo}.bak ]] || [[ -f ${libhw}.bak ]] || [[ -f ${strgmgr}.${storagemgrver} ]]; then
 
         # Restore synoinfo.conf from backup
         if [[ -f ${synoinfo}.bak ]]; then
             keyvalues=("support_btrfs_dedupe" "support_tiny_btrfs_dedupe")
             for v in "${!keyvalues[@]}"; do
-                defaultval="$(/usr/syno/bin/synogetkeyvalue ${synoinfo}.bak "${keyvalues[v]}")"
+                defaultval="$("$SYNOBIN/synogetkeyvalue" ${synoinfo}.bak "${keyvalues[v]}")"
                 if [[ -z $defaultval ]]; then defaultval="no"; fi
-                currentval="$(/usr/syno/bin/synogetkeyvalue ${synoinfo} "${keyvalues[v]}")"
+                currentval="$("$SYNOBIN/synogetkeyvalue" ${synoinfo} "${keyvalues[v]}")"
                 if [[ $currentval != "$defaultval" ]]; then
-                    if /usr/syno/bin/synosetkeyvalue "$synoinfo" "${keyvalues[v]}" "$defaultval";
-                    then
+                    if "$SYNOBIN/synosetkeyvalue" "$synoinfo" "${keyvalues[v]}" "$defaultval"; then
                         restored="yes"
                         echo "Restored ${keyvalues[v]} = $defaultval"
                     fi
                 fi
-                /usr/syno/bin/synosetkeyvalue "$synoinfo2" "${keyvalues[v]}" "$defaultval"
+                "$SYNOBIN/synosetkeyvalue" "$synoinfo2" "${keyvalues[v]}" "$defaultval"
             done
         fi
 
-        # Restore storage_panel.js from backup
+        # Restore storage_panel.js from backup (string-based)
         if [[ -f "${strgmgr}.$storagemgrver" ]]; then
             string1="(SYNO.SDS.StorageUtils.supportBtrfsDedupe,)"
             string2="(SYNO.SDS.StorageUtils.supportBtrfsDedupe&&e.dedup_info.show_config_btn)"
-
-            if grep -o "$string1" "${strgmgr}" >/dev/null; then
+            if grep -Fq "$string1" "${strgmgr}"; then
                 # Restore string in file
                 sed -i "s/${string1}/${string2/&&/\\&\\&}/g" "$strgmgr"
-
-                # Check we restored string in file
-                if grep -o "string2" "${strgmgr}" >/dev/null; then
+                # Check we restored string in file (FIX: use variable content)
+                if grep -Fq "$string2" "${strgmgr}"; then
                     restored="yes"
                     echo "Restored $(basename -- "$strgmgr")"
                 else
@@ -609,23 +482,19 @@ if [[ $restore == "yes" ]]; then
         fi
 
         if [[ -f "${libhw}.bak" ]]; then
-            # Check if backup libhwcontrol size matches
-            # in case backup is from previous DSM version
             filesize=$(wc -c "${libhw}" | awk '{print $1}')
             filebaksize=$(wc -c "${libhw}.bak" | awk '{print $1}')
             if [[ ! $filesize -eq "$filebaksize" ]]; then
                 echo -e "${Yellow}WARNING Backup file size is different to file!${Off}"
                 echo "Do you want to restore this backup? [yes/no]:"
-                read -r -t 20 answer
+                read -r -t 20 answer || answer="no"
                 if [[ $answer != "yes" ]]; then
                     exit
                 fi
             fi
-            # Restore from backup
             if ! compare_md5 "$libhw".bak "$libhw"; then
                 if cp -p "$libhw".bak "$libhw" ; then
-                    restored="yes"
-                    reboot="yes"
+                    restored="yes"; reboot="yes"
                     echo "Restored $(basename -- "$libhw")"
                 else
                     restoreerr=1
@@ -654,64 +523,63 @@ if [[ $restore == "yes" ]]; then
     exit
 fi
 
-
-
 #----------------------------------------------------------
 # Check NAS has enough memory
 
-if [[ $restore != "yes" ]] && [[ $skip != "yes" ]]; then
-    IFS=$'\n' read -r -d '' -a array < <(dmidecode -t memory | grep -E "[Ss]ize: [0-9]+ [MG]{1}[B]{1}$")
-    if [[ ${#array[@]} -gt "0" ]]; then
-        num="0"
-        while [[ $num -lt "${#array[@]}" ]]; do
-            memcheck=$(printf %s "${array[num]}" | awk '{print $1}')
-            if [[ ${memcheck,,} == "size:" ]]; then
-                ramsize=$(printf %s "${array[num]}" | awk '{print $2}')
-                bytes=$(printf %s "${array[num]}" | awk '{print $3}')
-                if [[ $ramsize =~ ^[0-9]+$ ]]; then  # Check $ramsize is numeric
-                    if [[ $bytes == "GB" ]]; then    # DSM 7.2 dmidecode returned GB
-                        ramsize=$((ramsize * 1024))  # Convert to MB
-                    fi
-                    if [[ $ramtotal ]]; then
-                        ramtotal=$((ramtotal +ramsize))
-                    else
-                        ramtotal="$ramsize"
-                    fi
-                fi
-            fi
-            num=$((num +1))
-        done
+if [[ $restore != "yes" && $skip != "yes" ]]; then
+    ramtotal=""
 
-        ramgb=$((ramtotal / 1024))
-
-        if [[ $storagemgrver ]]; then
-            # Only DSM 7.2.1 and later supports tiny dedupe
-            if [[ $tiny == "yes" ]] || [[ $ramtotal -lt 16384 ]]; then
-                ramneeded="4096"  # Tiny dedupe only needs 4GB ram
-                tiny="yes"
-            else
-                ramneeded="16384"  # Needs 16GB ram
-                tiny=""
-            fi
-        else
-            ramneeded="16384"  # Needs 16GB ram
-            tiny=""
+    if command -v dmidecode >/dev/null; then
+        # Prefer dmidecode if available
+        mapfile -t dmi_lines < <(dmidecode -t memory 2>/dev/null | grep -E "[Ss]ize: [0-9]+ [MG]B$")
+        if [[ ${#dmi_lines[@]} -gt 0 ]]; then
+            for line in "${dmi_lines[@]}"; do
+                set -- $line
+                # "Size: <num> <MB|GB>"
+                ramsize="$2"; unit="$3"
+                if [[ $unit == "GB" ]]; then ramsize=$((ramsize * 1024)); fi
+                ramtotal=$(( ${ramtotal:-0} + ramsize ))
+            done
         fi
+    fi
 
-        if [[ $ramtotal -lt "$ramneeded" ]]; then
-            ding
-            echo -e "\n${Error}ERROR${Off} Not enough memory installed for deduplication: $ramgb GB"
-            exit 1
-        else
-            echo -e "\nNAS has $ramgb GB of memory."
+    # Fallback to /proc/meminfo
+    if [[ -z $ramtotal || $ramtotal -eq 0 ]]; then
+        ram_kb=$(awk '/MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null)
+        if [[ -n $ram_kb ]]; then
+            ramtotal=$((ram_kb/1024))  # MB
         fi
-    else
+    fi
+
+    if [[ -z $ramtotal || $ramtotal -eq 0 ]]; then
         ding
         echo -e "\n${Error}ERROR${Off} Unable to determine the amount of installed memory!"
         exit 1
     fi
-fi
 
+    ramgb=$((ramtotal / 1024))
+    # DSM 7.2.1+ supports tiny mode explicitly（用 buildnumber 辨识）
+    if [[ $buildnumber -gt 64570 ]]; then
+        if [[ $tiny == "yes" || $ramtotal -lt 16384 ]]; then
+            ramneeded="4096"  # Tiny dedupe only needs 4GB RAM
+            tiny="yes"
+        else
+            ramneeded="16384"
+            tiny=""
+        fi
+    else
+        ramneeded="16384"
+        tiny=""
+    fi
+
+    if [[ $ramtotal -lt "$ramneeded" ]]; then
+        ding
+        echo -e "\n${Error}ERROR${Off} Not enough memory installed for deduplication: $ramgb GB"
+        exit 1
+    else
+        echo -e "\nNAS has $ramgb GB of memory."
+    fi
+fi
 
 #----------------------------------------------------------
 # Edit libhwcontrol.so.1
@@ -722,84 +590,54 @@ findbytes(){
     sed 's/[^ ]* *//' |
     tr '\012' ' ' |
     grep -b -i -o "$hexstring" |
-    #grep -b -i -o "$hexstring ".. |
     cut -d ':' -f 1 |
     xargs -I % expr % / 3)
 
     # Convert decimal position of matching hex string to hex
     array=("$match")
-    if [[ ${#array[@]} -gt "1" ]]; then
+    if [[ ${#array[@]} -gt 1 ]]; then
         num="0"
         while [[ $num -lt "${#array[@]}" ]]; do
             poshex=$(printf "%x" "${array[$num]}")
-            if [[ $debug == "yes" ]]; then
-                echo "${array[$num]} = $poshex"  # debug
-            fi
-
+            [[ $debug == "yes" ]] && echo "${array[$num]} = $poshex"
             seek="${array[$num]}"
             xxd=$(xxd -u -l 12 -s "$seek" "$1")
-            #echo "$xxd"  # debug
-            if [[ $debug == "yes" ]]; then
-                printf %s "$xxd" | cut -d" " -f1-7
-            else
-                printf %s "$xxd" | cut -d" " -f1-7 >/dev/null
-            fi
+            [[ $debug == "yes" ]] && printf %s "$xxd" | cut -d" " -f1-7
             bytes=$(printf %s "$xxd" | cut -d" " -f6)
-            #echo "$bytes"  # debug
-
             num=$((num +1))
         done
     elif [[ -n $match ]]; then
         poshex=$(printf "%x" "$match")
-        if [[ $debug == "yes" ]]; then
-            echo "$match = $poshex"  # debug
-        fi
-
+        [[ $debug == "yes" ]] && echo "$match = $poshex"
         seek="$match"
         xxd=$(xxd -u -l 12 -s "$seek" "$1")
-        #echo "$xxd"  # debug
-        if [[ $debug == "yes" ]]; then
-            printf %s "$xxd" | cut -d" " -f1-7
-        else
-            printf %s "$xxd" | cut -d" " -f1-7 >/dev/null
-        fi
+        [[ $debug == "yes" ]] && printf %s "$xxd" | cut -d" " -f1-7
         bytes=$(printf %s "$xxd" | cut -d" " -f6)
-        #echo "$bytes"  # debug
     else
         bytes=""
     fi
 }
 
-
-# Check value in file and backup file
+# --check only
 if [[ $check == "yes" ]]; then
     err=0
-
-    # Check if deduplication enabled in synoinfo.conf
     sbd=support_btrfs_dedupe
     stbd=support_tiny_btrfs_dedupe
-    setting="$(/usr/syno/bin/synogetkeyvalue "$synoinfo" ${sbd})"
-    setting2="$(/usr/syno/bin/synogetkeyvalue "$synoinfo" ${stbd})"
-#    if [[ $tiny != "yes" ]] || [[ $ramtotal -lt 16384 ]]; then
-        if [[ $setting == "yes" ]]; then
-            echo -e "\nBtrfs Data Deduplication is ${Cyan}enabled${Off}."
-        else
-            echo -e "\nBtrfs Data Deduplication is ${Cyan}not${Off} enabled."
-        fi
-#    else
-        if [[ $setting2 == "yes" ]]; then
-            echo -e "\nTiny Btrfs Data Deduplication is ${Cyan}enabled${Off}."
-        else
-            echo -e "\nTiny Btrfs Data Deduplication is ${Cyan}not${Off} enabled."
-        fi
-#    fi
+    setting="$("$SYNOBIN/synogetkeyvalue" "$synoinfo" ${sbd})"
+    setting2="$("$SYNOBIN/synogetkeyvalue" "$synoinfo" ${stbd})"
+    if [[ $setting == "yes" ]]; then
+        echo -e "\nBtrfs Data Deduplication is ${Cyan}enabled${Off}."
+    else
+        echo -e "\nBtrfs Data Deduplication is ${Cyan}not${Off} enabled."
+    fi
+    if [[ $setting2 == "yes" ]]; then
+        echo -e "Tiny Btrfs Data Deduplication is ${Cyan}enabled${Off}."
+    else
+        echo -e "Tiny Btrfs Data Deduplication is ${Cyan}not${Off} enabled."
+    fi
 
-    # DSM 7.2.1 only and only if --hdd option used
-    # Dedupe config button for HDDs and 2.5 inch SSDs in DSM 7.2.1
-#    if [[ -f "$strgmgr" ]] && [[ $hdd == "yes" ]]; then
     if [[ -f "$strgmgr" ]]; then
-        # StorageManager package is installed and --hdd option used
-        if ! grep '&&e.dedup_info.show_config_btn' "$strgmgr" >/dev/null; then
+        if ! grep -Fq '&&e.dedup_info.show_config_btn' "$strgmgr"; then
             echo -e "\nDedupe config menu for HDDs and 2.5\" SSDs is ${Cyan}enabled${Off}."
         else
             echo -e "\nDedupe config menu for HDDs and 2.5\" SSDs is ${Cyan}not${Off} enabled."
@@ -807,7 +645,6 @@ if [[ $check == "yes" ]]; then
         fi
     fi
 
-    # Check value in file
     echo -e "\nChecking non-Synology drive supported."
     hexstring="80 3E 00 B8 01 00 00 00 90 90 48 8B"
     findbytes "$libhw"
@@ -816,7 +653,7 @@ if [[ $check == "yes" ]]; then
     else
         hexstring="80 3E 00 B8 01 00 00 00 75 2. 48 8B"
         findbytes "$libhw"
-        if [[ $bytes =~ "752"[0-9] ]]; then
+        if [[ $bytes =~ 752[0-9] ]]; then
             echo -e "File is ${Cyan}not${Off} edited."
         else
             echo -e "${Red}hex string not found!${Off}"
@@ -824,12 +661,11 @@ if [[ $check == "yes" ]]; then
         fi
     fi
 
-    # Check value in backup file
     if [[ -f ${libhw}.bak ]]; then
         echo -e "\nChecking value in backup file."
         hexstring="80 3E 00 B8 01 00 00 00 75 2. 48 8B"
         findbytes "${libhw}.bak"
-        if [[ $bytes =~ "752"[0-9] ]]; then
+        if [[ $bytes =~ 752[0-9] ]]; then
             echo -e "Backup file is okay."
         else
             hexstring="80 3E 00 B8 01 00 00 00 90 90 48 8B"
@@ -844,15 +680,12 @@ if [[ $check == "yes" ]]; then
     else
         echo "No backup file found."
     fi
-
     exit "$err"
 fi
 
-
 #----------------------------------------------------------
-# Backup libhwcontrol
+# Backup libhwcontrol (timestamp + .bak symlink)
 
-# Always create a timestamped backup
 backup_file="${libhw}.bak.${backup_timestamp}"
 if [[ $dryrun == "yes" ]]; then
     echo -e "${Cyan}[DRY RUN]${Off} Would create backup: $(basename -- "$backup_file")"
@@ -865,35 +698,22 @@ else
         echo -e "${Error}ERROR${Off} Backup failed!"
         exit 1
     fi
-
-    # Also create/update the .bak symlink for compatibility
-    if [[ -f "${libhw}.bak" ]] || [[ -L "${libhw}.bak" ]]; then
-        # Remove existing .bak (file or symlink)
-        rm -f "${libhw}.bak"
-    fi
-
-    # Create symlink to latest backup (relative path for same directory)
-    cd "$(dirname "$libhw")" && ln -sf "$(basename -- "$backup_file")" "$(basename -- "${libhw}.bak")" && cd - >/dev/null
+    rm -f "${libhw}.bak"
+    ( cd "$(dirname "$libhw")" && ln -sf "$(basename -- "$backup_file")" "$(basename -- "${libhw}.bak")" )
     echo "Latest backup linked as: $(basename -- "${libhw}.bak")"
 fi
-
 
 #----------------------------------------------------------
 # Edit libhwcontrol
 
-#echo -e "\nChecking $(basename -- "$libhw")."
-
-# Check if the file is already edited
 hexstring="80 3E 00 B8 01 00 00 00 90 90 48 8B"
 findbytes "$libhw"
 if [[ $bytes == "9090" ]]; then
-    #echo -e "\n$(basename -- "$libhw") already edited."
     echo -e "\nNon-Synology drive support already enabled."
 else
-    # Check if the file is okay for editing
     hexstring="80 3E 00 B8 01 00 00 00 75 2. 48 8B"
     findbytes "$libhw"
-    if ! [[ $bytes =~ "752"[0-9] ]]; then
+    if ! [[ $bytes =~ 752[0-9] ]]; then
         ding
         echo -e "\n${Red}hex string not found!${Off}"
         exit 1
@@ -906,33 +726,25 @@ else
         echo -e "${Cyan}[DRY RUN]${Off} System reboot would be required"
         reboot="yes"
     else
-        # Replace bytes in file
         posrep=$(printf "%x\n" $((0x${poshex}+8)))
         if ! printf %s "${posrep}: 9090" | xxd -r - "$libhw"; then
             ding
             echo -e "${Error}ERROR${Off} Failed to edit $(basename -- "$libhw")!"
             exit 1
         else
-            # Check if libhwcontrol.so.1 was successfully edited
-            #echo -e "\nChecking if file was successfully edited."
             hexstring="80 3E 00 B8 01 00 00 00 90 90 48 8B"
             findbytes "$libhw"
             if [[ $bytes == "9090" ]]; then
-                #echo -e "File successfully edited."
                 echo -e "\nEnabled non-Synology drive support."
-                #echo -e "\n${Cyan}You can now enable data deduplication"\
-                #    "pool in Storage Manager.${Off}"
                 reboot="yes"
             fi
         fi
     fi
 fi
 
-
 #------------------------------------------------------------------------------
 # Edit /etc.defaults/synoinfo.conf
 
-# Backup synoinfo.conf with timestamp
 backup_file="${synoinfo}.bak.${backup_timestamp}"
 if [[ $dryrun == "yes" ]]; then
     echo -e "\n${Cyan}[DRY RUN]${Off} Would backup $(basename -- "$synoinfo") as $(basename -- "$backup_file")"
@@ -940,9 +752,8 @@ if [[ $dryrun == "yes" ]]; then
 else
     if cp -p "$synoinfo" "$backup_file"; then
         echo -e "\nBacked up $(basename -- "$synoinfo") as $(basename -- "$backup_file")" >&2
-        # Create/update .bak symlink for compatibility (remove old one first)
         rm -f "${synoinfo}.bak"
-        cd "$(dirname "$synoinfo")" && ln -sf "$(basename -- "$backup_file")" "$(basename -- "${synoinfo}.bak")" && cd - >/dev/null
+        ( cd "$(dirname "$synoinfo")" && ln -sf "$(basename -- "$backup_file")" "$(basename -- "${synoinfo}.bak")" )
     else
         ding
         echo -e "\n${Error}ERROR 5${Off} Failed to backup $(basename -- "$synoinfo")!"
@@ -955,85 +766,78 @@ sbd=support_btrfs_dedupe
 stbd=support_tiny_btrfs_dedupe
 
 # Enable dedupe support if needed
-setting="$(/usr/syno/bin/synogetkeyvalue "$synoinfo" ${sbd})"
+setting="$("$SYNOBIN/synogetkeyvalue" "$synoinfo" ${sbd})"
 if [[ $tiny != "yes" ]]; then
-    if [[ ! $setting ]] || [[ $setting == "no" ]]; then
-        if [[ -n $sbd ]]; then
-            if [[ $dryrun == "yes" ]]; then
-                echo -e "\n${Cyan}[DRY RUN]${Off} Would set $sbd=yes in $synoinfo"
-                echo -e "${Cyan}[DRY RUN]${Off} Would set $sbd=yes in $synoinfo2"
-                enabled="yes"
-            else
-                /usr/syno/bin/synosetkeyvalue "$synoinfo" "$sbd" yes
-                /usr/syno/bin/synosetkeyvalue "$synoinfo2" "$sbd" yes
-                enabled="yes"
-            fi
+    if [[ -z $setting || $setting == "no" ]]; then
+        if [[ $dryrun == "yes" ]]; then
+            echo -e "\n${Cyan}[DRY RUN]${Off} Would set $sbd=yes in $synoinfo"
+            echo -e "${Cyan}[DRY RUN]${Off} Would set $sbd=yes in $synoinfo2"
+            enabled="yes"
+        else
+            "$SYNOBIN/synosetkeyvalue" "$synoinfo" "$sbd" yes
+            "$SYNOBIN/synosetkeyvalue" "$synoinfo2" "$sbd" yes
+            enabled="yes"
         fi
-    elif [[ $setting == "yes" ]]; then
+    else
         echo -e "\nBtrfs Data Deduplication already enabled."
     fi
-
-    # Disable support_tiny_btrfs_dedupe
+    # Disable tiny if we enabled normal
     if [[ $enabled == "yes" ]]; then
-        if grep "$stbd" "$synoinfo" >/dev/null; then
+        if grep -Fq "$stbd" "$synoinfo"; then
             if [[ $dryrun == "yes" ]]; then
                 echo -e "${Cyan}[DRY RUN]${Off} Would set $stbd=no in $synoinfo"
             else
-                /usr/syno/bin/synosetkeyvalue "$synoinfo" "$stbd" no
+                "$SYNOBIN/synosetkeyvalue" "$synoinfo" "$stbd" no
             fi
         fi
-        if grep "$stbd" "$synoinfo2" >/dev/null; then
+        if grep -Fq "$stbd" "$synoinfo2"; then
             if [[ $dryrun == "yes" ]]; then
                 echo -e "${Cyan}[DRY RUN]${Off} Would set $stbd=no in $synoinfo2"
             else
-                /usr/syno/bin/synosetkeyvalue "$synoinfo2" "$stbd" no
+                "$SYNOBIN/synosetkeyvalue" "$synoinfo2" "$stbd" no
             fi
         fi
     fi
 fi
 
 # Enable tiny dedupe support if needed
-setting="$(/usr/syno/bin/synogetkeyvalue "$synoinfo" ${stbd})"
+setting="$("$SYNOBIN/synogetkeyvalue" "$synoinfo" ${stbd})"
 if [[ $tiny == "yes" ]]; then
-    if [[ ! $setting ]] || [[ $setting == "no" ]]; then
-        if [[ -n $stbd ]]; then
-            if [[ $dryrun == "yes" ]]; then
-                echo -e "\n${Cyan}[DRY RUN]${Off} Would set $stbd=yes in $synoinfo"
-                echo -e "${Cyan}[DRY RUN]${Off} Would set $stbd=yes in $synoinfo2"
-                enabled="yes"
-            else
-                /usr/syno/bin/synosetkeyvalue "$synoinfo" "$stbd" yes
-                /usr/syno/bin/synosetkeyvalue "$synoinfo2" "$stbd" yes
-                enabled="yes"
-            fi
+    if [[ -z $setting || $setting == "no" ]]; then
+        if [[ $dryrun == "yes" ]]; then
+            echo -e "\n${Cyan}[DRY RUN]${Off} Would set $stbd=yes in $synoinfo"
+            echo -e "${Cyan}[DRY RUN]${Off} Would set $stbd=yes in $synoinfo2"
+            enabled="yes"
+        else
+            "$SYNOBIN/synosetkeyvalue" "$synoinfo" "$stbd" yes
+            "$SYNOBIN/synosetkeyvalue" "$synoinfo2" "$stbd" yes
+            enabled="yes"
         fi
-    elif [[ $setting == "yes" ]]; then
+    else
         echo -e "\nTiny Btrfs Data Deduplication already enabled."
     fi
-
-    # Disable support_btrfs_dedupe
+    # Disable normal if we enabled tiny
     if [[ $enabled == "yes" ]]; then
-        if grep "$sbd" "$synoinfo" >/dev/null; then
+        if grep -Fq "$sbd" "$synoinfo"; then
             if [[ $dryrun == "yes" ]]; then
                 echo -e "${Cyan}[DRY RUN]${Off} Would set $sbd=no in $synoinfo"
             else
-                /usr/syno/bin/synosetkeyvalue "$synoinfo" "$sbd" no
+                "$SYNOBIN/synosetkeyvalue" "$synoinfo" "$sbd" no
             fi
         fi
-        if grep "$sbd" "$synoinfo2" >/dev/null; then
+        if grep -Fq "$sbd" "$synoinfo2"; then
             if [[ $dryrun == "yes" ]]; then
                 echo -e "${Cyan}[DRY RUN]${Off} Would set $sbd=no in $synoinfo2"
             else
-                /usr/syno/bin/synosetkeyvalue "$synoinfo2" "$sbd" no
+                "$SYNOBIN/synosetkeyvalue" "$synoinfo2" "$sbd" no
             fi
         fi
     fi
 fi
 
-
 # Check if we enabled deduplication
-setting="$(/usr/syno/bin/synogetkeyvalue "$synoinfo" ${sbd})"
-setting2="$(/usr/syno/bin/synogetkeyvalue "$synoinfo" ${stbd})"
+setting="$("$SYNOBIN/synogetkeyvalue" "$synoinfo" ${sbd})"
+setting2="$("$SYNOBIN/synogetkeyvalue" "$synoinfo" ${stbd})"
 if [[ $enabled == "yes" ]]; then
     if [[ $tiny != "yes" ]]; then
         if [[ $setting == "yes" ]]; then
@@ -1054,16 +858,11 @@ if [[ $enabled == "yes" ]]; then
     fi
 fi
 
-
 #------------------------------------------------------------------------------
-# Edit /var/packages/StorageManager/target/ui/storage_panel.js
+# Edit StorageManager UI to show HDD dedupe config (DSM 7.2.1+ only when --hdd)
 
-# Enable dedupe config button for HDDs in DSM 7.2.1
-if [[ -f "$strgmgr" ]] && [[ $hdd == "yes" ]]; then
-    # StorageManager package is installed
-    if grep '&&e.dedup_info.show_config_btn' "$strgmgr" >/dev/null; then
-        # Backup storage_panel.js with timestamp
-        storagemgrver="$(synopkg version StorageManager)"
+if [[ -f "$strgmgr" && $hdd == "yes" ]]; then
+    if grep -Fq '&&e.dedup_info.show_config_btn' "$strgmgr"; then
         echo ""
         backup_file="${strgmgr}.bak.${backup_timestamp}"
         if [[ $dryrun == "yes" ]]; then
@@ -1075,17 +874,15 @@ if [[ -f "$strgmgr" ]] && [[ $hdd == "yes" ]]; then
         else
             if cp -p "$strgmgr" "$backup_file"; then
                 echo -e "Backed up $(basename -- "$strgmgr") as $(basename -- "$backup_file")"
-                # Create/update version-specific backup link (remove old one first)
                 rm -f "${strgmgr}.$storagemgrver"
-                cd "$(dirname "$strgmgr")" && ln -sf "$(basename -- "$backup_file")" "$(basename -- "${strgmgr}.$storagemgrver")" && cd - >/dev/null
+                ( cd "$(dirname "$strgmgr")" && ln -sf "$(basename -- "$backup_file")" "$(basename -- "${strgmgr}.$storagemgrver")" )
             else
                 ding
                 echo -e "${Error}ERROR${Off} Failed to backup $(basename -- "$strgmgr")!"
             fi
 
             sed -i 's/&&e.dedup_info.show_config_btn//g' "$strgmgr"
-            # Check if we edited file
-            if ! grep '&&e.dedup_info.show_config_btn' "$strgmgr" >/dev/null; then
+            if ! grep -Fq '&&e.dedup_info.show_config_btn' "$strgmgr"; then
                 echo -e "Enabled dedupe config menu for HDDs and 2.5\" SSDs."
                 reload="yes"
             else
@@ -1097,7 +894,7 @@ if [[ -f "$strgmgr" ]] && [[ $hdd == "yes" ]]; then
         echo -e "\nDedupe config menu for HDDs and 2.5\" SSDs already enabled."
     fi
 elif [[ -f "$strgmgr" ]]; then
-    if ! grep '&&e.dedup_info.show_config_btn' "$strgmgr" >/dev/null; then
+    if ! grep -Fq '&&e.dedup_info.show_config_btn' "$strgmgr"; then
         echo -e "\nDedupe config menu for HDDs and 2.5\" SSDs is enabled."
     else
         echo -e "\nDedupe config menu for HDDs and 2.5\" SSDs not enabled."
@@ -1105,8 +902,7 @@ elif [[ -f "$strgmgr" ]]; then
     fi
 fi
 
-
-# Make sure xpe's storage_manager.js.gz includes our changes. Issue #88
+# Ensure gzip cache updated if present (xpe issue #88)
 if [[ -f "${strgmgr}.gz" ]]; then
     if [[ $dryrun == "yes" ]]; then
         echo -e "${Cyan}[DRY RUN]${Off} Would update ${strgmgr}.gz"
@@ -1114,7 +910,6 @@ if [[ -f "${strgmgr}.gz" ]]; then
         gzip -c "${strgmgr}" > "${strgmgr}.gz"
     fi
 fi
-
 
 #----------------------------------------------------------
 # Finished
@@ -1137,4 +932,3 @@ else
 fi
 
 exit
-
